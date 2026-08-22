@@ -1,0 +1,78 @@
+name: Subaru Crosstrek safety
+
+on:
+  push:
+    branches:
+      - subaru-crosstrek
+  pull_request:
+    branches:
+      - subaru-crosstrek
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to test
+        required: true
+        default: subaru-crosstrek
+        type: string
+
+concurrency:
+  group: subaru-safety-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  opendbc:
+    name: opendbc checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run opendbc checks
+        working-directory: opendbc_repo
+        run: ./test.sh
+
+  safety:
+    name: safety tests and coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run full safety suite
+        working-directory: opendbc_repo
+        run: ./opendbc/safety/tests/test.sh
+
+  mutation:
+    name: safety mutation tests
+    needs: safety
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Run mutation tests
+        working-directory: opendbc_repo
+        run: |
+          source setup.sh
+          python opendbc/safety/tests/mutation.py
