@@ -47,14 +47,13 @@ jobs:
             exit 0
           fi
 
-          # release-mici is a stripped build. Prefer its recorded source; some
-          # builds record a private/unreachable SHA, so use the official version
-          # tag in that case. Never fall back to master or staging.
+          # The version tag can differ from the shipped stable build (for
+          # example, release-only reverts). Require the build's exact source.
           recorded_source="$(git show refs/sync/release:git_src_commit | tr -d '[:space:]')"
           [[ "$recorded_source" =~ ^[0-9a-f]{40}$ ]]
           if ! git fetch --no-tags upstream "$recorded_source:refs/sync/source"; then
-            echo "Recorded build source unavailable; using official v$release_version"
-            git fetch --no-tags upstream "refs/tags/v$release_version:refs/sync/source"
+            echo "::error::Stable build source $recorded_source is unavailable upstream. Refusing to substitute the version tag."
+            exit 1
           fi
           source="$(git rev-parse 'refs/sync/source^{commit}')"
           source_version="$(git show "$source:RELEASES.md" | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
