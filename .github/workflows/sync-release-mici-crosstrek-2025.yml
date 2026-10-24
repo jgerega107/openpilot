@@ -23,133 +23,97 @@ jobs:
         with:
           fetch-depth: 0
           ref: release-mici-crosstrek-2025
-          submodules: recursive
 
-      - name: Resolve source and forked opendbc commits
+      - name: Replay fork commits on stable source
         id: sync
         shell: bash
         run: |
           set -euo pipefail
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/commaai/openpilot.git
-
-          release_snapshot="$(git ls-remote upstream refs/heads/release-mici | awk '{print $1}')"
-          test -n "$release_snapshot"
-          git fetch --no-tags upstream \
-            "$release_snapshot:refs/sync/openpilot-release"
-
-          source_commit="$(git show refs/sync/openpilot-release:git_src_commit | tr -d '[:space:]')"
-          test -n "$source_commit"
-          git fetch --no-tags upstream \
-            "$source_commit:refs/sync/openpilot-source"
-
-          required_opendbc="$(git ls-tree refs/sync/openpilot-source opendbc_repo | awk '$1 == "160000" {print $3}')"
-          test -n "$required_opendbc"
-
-          git -C opendbc_repo remote set-url origin https://github.com/jgerega107/opendbc.git
-          git -C opendbc_repo remote add upstream https://github.com/commaai/opendbc.git
-          git -C opendbc_repo fetch --no-tags origin \
-            +refs/heads/release-mici-crosstrek-2025:refs/remotes/origin/release-mici-crosstrek-2025
-          git -C opendbc_repo fetch --no-tags upstream \
-            "$required_opendbc:refs/sync/required-opendbc"
-
-          fork_opendbc="$(git -C opendbc_repo rev-parse refs/remotes/origin/release-mici-crosstrek-2025)"
-          if ! git -C opendbc_repo merge-base --is-ancestor refs/sync/required-opendbc "$fork_opendbc"; then
-            echo "The opendbc fork has not incorporated required commit $required_opendbc" >&2
-            echo "Run the opendbc synchronization workflow first" >&2
-            exit 1
-          fi
-
-          current_version="$(sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' RELEASES.md | head -1)"
-          release_version="$(git show refs/sync/openpilot-release:RELEASES.md | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
-          test -n "$current_version"
-          test -n "$release_version"
-          echo "release-mici v${release_version:-unknown}: $release_snapshot"
-          echo "current vehicle branch version: v$current_version"
-          echo "openpilot source: $source_commit"
-          echo "required upstream opendbc: $required_opendbc"
-          echo "forked opendbc: $fork_opendbc"
+          git fetch --no-tags upstream refs/heads/release-mici:refs/sync/release
 
           before="$(git rev-parse HEAD)"
-          echo "before=$before" >> "$GITHUB_OUTPUT"
-          echo "fork_opendbc=$fork_opendbc" >> "$GITHUB_OUTPUT"
-
-          source_is_older=false
-          oldest_version="$(printf '%s\n%s\n' "$current_version" "$release_version" | sort -V | head -1)"
-          if test "$release_version" != "$current_version" && test "$release_version" = "$oldest_version"; then
-            source_is_older=true
-            echo "Skipping older release-mici source v$release_version"
-          fi
-
-          if test "$source_is_older" = false && ! git merge-base --is-ancestor refs/sync/openpilot-source HEAD; then
-            if ! git merge-base HEAD refs/sync/openpilot-source >/dev/null; then
-              echo "release-mici source has unrelated history; manual reconciliation is required" >&2
-              exit 1
-            fi
-
-            if ! git merge --no-commit --no-ff refs/sync/openpilot-source; then
-              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
-              if (( ${#conflicts[@]} == 0 )); then
-                echo "Merge failed without producing resolvable conflicts" >&2
-                exit 1
-              fi
-              for path in "${conflicts[@]}"; do
-                case "$path" in
-                  .github/workflows/*|.gitmodules|opendbc_repo) ;;
-                  *)
-                    echo "Merge conflict requiring manual resolution: $path" >&2
-                    exit 1
-                    ;;
-                esac
-              done
-            fi
-
-            if git ls-files -u -- .gitmodules | grep -q .; then
-              git checkout --theirs .gitmodules
-            fi
-
-            # Keep the fork's workflow definitions when they conflict with
-            # upstream workflow changes. They are intentionally maintained on
-            # the vehicle branch as well as the default branch.
-            if git ls-files -u -- .github/workflows | grep -q .; then
-              git checkout --ours -- .github/workflows
-              git add .github/workflows
-            fi
-            if test "$(git config -f .gitmodules --get submodule.opendbc.url)" != "../../jgerega107/opendbc.git"; then
-              git config -f .gitmodules submodule.opendbc.url ../../jgerega107/opendbc.git
-            fi
-            git -C opendbc_repo checkout --detach "$fork_opendbc"
-            git add .gitmodules opendbc_repo
-
-            if test -n "$(git diff --name-only --diff-filter=U)"; then
-              echo "Unresolved merge conflicts remain" >&2
-              git diff --name-only --diff-filter=U >&2
-              exit 1
-            fi
-            git commit --no-edit
-          fi
-
-          if test "$(git config -f .gitmodules --get submodule.opendbc.url)" != "../../jgerega107/opendbc.git"; then
-            git config -f .gitmodules submodule.opendbc.url ../../jgerega107/opendbc.git
-          fi
-          git -C opendbc_repo checkout --detach "$fork_opendbc"
-          git add .gitmodules opendbc_repo
-          if ! git diff --cached --quiet; then
-            git commit -m "build: update Crosstrek source dependencies" \
-              -m "Pin opendbc to the tested release-mici-crosstrek-2025 fork commit."
-          fi
-
-          after="$(git rev-parse HEAD)"
-          if test "$after" = "$before"; then
-            echo "No source or opendbc update is required"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+          release_snapshot="$(git rev-parse refs/sync/release)"
+          release_version="$(git show refs/sync/release:RELEASES.md | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
+          current_version="$(sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' RELEASES.md | head -1)"
+          test -n "$release_version"
+          test -n "$current_version"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          oldest="$(printf '%s\n%s\n' "$current_version" "$release_version" | sort -V | head -1)"
+          if test "$release_version" != "$current_version" && test "$oldest" = "$release_version"; then
+            echo "Skipping older stable v$release_version (current v$current_version)"
             exit 0
           fi
 
-          git submodule sync --recursive
-          git submodule update --init --recursive
+          # release-mici is a stripped build. Prefer its recorded source; some
+          # builds record a private/unreachable SHA, so use the official version
+          # tag in that case. Never fall back to master or staging.
+          recorded_source="$(git show refs/sync/release:git_src_commit | tr -d '[:space:]')"
+          [[ "$recorded_source" =~ ^[0-9a-f]{40}$ ]]
+          if ! git fetch --no-tags upstream "$recorded_source:refs/sync/source"; then
+            echo "Recorded build source unavailable; using official v$release_version"
+            git fetch --no-tags upstream "refs/tags/v$release_version:refs/sync/source"
+          fi
+          source="$(git rev-parse 'refs/sync/source^{commit}')"
+          source_version="$(git show "$source:RELEASES.md" | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
+          test "$source_version" = "$release_version"
+          echo "Stable build: $release_snapshot; source: $source (v$release_version)"
+          if git merge-base --is-ancestor "$source" HEAD; then
+            echo "Already based on this stable source; nothing to replay"
+            exit 0
+          fi
+
+          base="$(git merge-base HEAD "$source")"
+          # Refuse historical merge-based branches or upstream commits in the
+          # replay range. Only the fork's dependency and CI commits belong here.
+          test -z "$(git rev-list --merges "$base..HEAD")"
+          while IFS= read -r path; do
+            case "$path" in
+              .gitmodules|opendbc_repo|.github/workflows/*) ;;
+              *) echo "Unexpected fork change requiring review: $path" >&2; exit 1 ;;
+            esac
+          done < <(git log --format= --name-only "$base..HEAD" | sed '/^$/d' | sort -u)
+
+          fork_opendbc="$(git rev-parse HEAD:opendbc_repo)"
+          required_opendbc="$(git rev-parse "$source:opendbc_repo")"
+          # Preserve the branch's reviewed Subaru pin. Do not silently advance
+          # to a different opendbc branch or discard the Subaru changes.
+          opendbc_check="$(mktemp -d)"
+          git init "$opendbc_check"
+          git -C "$opendbc_check" fetch --no-tags https://github.com/jgerega107/opendbc.git "$fork_opendbc"
+          git -C "$opendbc_check" fetch --no-tags https://github.com/commaai/opendbc.git "$required_opendbc"
+          if ! git -C "$opendbc_check" merge-base --is-ancestor "$required_opendbc" "$fork_opendbc"; then
+            echo "Subaru opendbc pin must incorporate $required_opendbc before syncing" >&2
+            exit 1
+          fi
+
+          # A rebase replays each fork commit; it does not create a sync/merge
+          # commit. Resolve only the known submodule pin conflict. Other
+          # conflicts fail without publishing anything.
+          if ! GIT_EDITOR=true git rebase --onto "$source" "$base"; then
+            while test -d .git/rebase-merge || test -d .git/rebase-apply; do
+              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+              if (( ${#conflicts[@]} != 1 )) || test "${conflicts[0]}" != opendbc_repo; then
+                git status --short >&2
+                echo "Replay conflict requires manual review" >&2
+                exit 1
+              fi
+              git update-index --cacheinfo "160000,$fork_opendbc,opendbc_repo"
+              GIT_EDITOR=true git rebase --continue || {
+                test -d .git/rebase-merge || test -d .git/rebase-apply
+              }
+            done
+          fi
+          git merge-base --is-ancestor "$source" HEAD
+          test -z "$(git rev-list --merges "$source..HEAD")"
+          test "$(git rev-parse HEAD:opendbc_repo)" = "$fork_opendbc"
+          test "$(git config -f .gitmodules --get submodule.opendbc.url)" = ../../jgerega107/opendbc.git
+          git diff --check "$source" HEAD
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+          echo "fork_opendbc=$fork_opendbc" >> "$GITHUB_OUTPUT"
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify synchronized source checkout
@@ -157,14 +121,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive
           test ! -e prebuilt
-          test "$(git config -f .gitmodules --get submodule.opendbc.url)" = "../../jgerega107/opendbc.git"
-          test "$(git rev-parse HEAD:opendbc_repo)" = "${{ steps.sync.outputs.fork_opendbc }}"
-          test "$(git rev-parse HEAD:opendbc_repo)" = "$(git -C opendbc_repo rev-parse HEAD)"
           test -z "$(git submodule status --recursive | grep '^[-+]' || true)"
-          grep -q 'SUBARU_CROSSTREK_2025' opendbc_repo/opendbc/car/subaru/values.py
-          git diff --check "${{ steps.sync.outputs.before }}"..HEAD
+          grep -q SUBARU_CROSSTREK_2025 opendbc_repo/opendbc/car/subaru/values.py
+          test "$(git -C opendbc_repo rev-parse HEAD)" = "${{ steps.sync.outputs.fork_opendbc }}"
 
-      - name: Publish synchronized branch
+      - name: Publish replayed branch
         if: steps.sync.outputs.changed == 'true'
-        run: git push origin HEAD:refs/heads/release-mici-crosstrek-2025
+        env:
+          BEFORE: ${{ steps.sync.outputs.before }}
+        run: git push --force-with-lease="refs/heads/release-mici-crosstrek-2025:$BEFORE" origin HEAD:refs/heads/release-mici-crosstrek-2025
