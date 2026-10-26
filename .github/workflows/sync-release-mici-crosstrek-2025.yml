@@ -1,6 +1,11 @@
 name: Sync release-mici Crosstrek source branch
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/sync-release-mici-crosstrek-2025.yml
   schedule:
     - cron: "47 */6 * * *"
   workflow_dispatch:
@@ -27,38 +32,32 @@ jobs:
       - name: Replay fork commits on stable source
         id: sync
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/commaai/openpilot.git
-          git fetch --no-tags upstream refs/heads/release-mici:refs/sync/release
-
-          before="$(git rev-parse HEAD)"
-          release_snapshot="$(git rev-parse refs/sync/release)"
-          release_version="$(git show refs/sync/release:RELEASES.md | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
+          # GitHub's latest published release is the source of truth.
+          # Resolve the tag itself: target_commitish can simply say "master".
+          release_tag="$(gh api repos/commaai/openpilot/releases/latest --jq .tag_name)"
+          [[ "$release_tag" =~ ^v[0-9]+(\.[0-9]+){2}$ ]]
+          git fetch --no-tags upstream "refs/tags/$release_tag:refs/sync/source"
+          source="$(git rev-parse 'refs/sync/source^{commit}')"
+          release_version="${release_tag#v}"
+          source_version="$(git show "$source:RELEASES.md" | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
           current_version="$(sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' RELEASES.md | head -1)"
-          test -n "$release_version"
+          test "$source_version" = "$release_version"
           test -n "$current_version"
+          before="$(git rev-parse HEAD)"
           echo "changed=false" >> "$GITHUB_OUTPUT"
           oldest="$(printf '%s\n%s\n' "$current_version" "$release_version" | sort -V | head -1)"
           if test "$release_version" != "$current_version" && test "$oldest" = "$release_version"; then
-            echo "Skipping older stable v$release_version (current v$current_version)"
+            echo "Skipping older release $release_tag (current v$current_version)"
             exit 0
           fi
-
-          # The version tag can differ from the shipped stable build (for
-          # example, release-only reverts). Require the build's exact source.
-          recorded_source="$(git show refs/sync/release:git_src_commit | tr -d '[:space:]')"
-          [[ "$recorded_source" =~ ^[0-9a-f]{40}$ ]]
-          if ! git fetch --no-tags upstream "$recorded_source:refs/sync/source"; then
-            echo "::error::Stable build source $recorded_source is unavailable upstream. Refusing to substitute the version tag."
-            exit 1
-          fi
-          source="$(git rev-parse 'refs/sync/source^{commit}')"
-          source_version="$(git show "$source:RELEASES.md" | sed -n 's/^Version \([0-9][0-9.]*\).*/\1/p' | head -1)"
-          test "$source_version" = "$release_version"
-          echo "Stable build: $release_snapshot; source: $source (v$release_version)"
+          echo "Latest GitHub release: $release_tag; source: $source"
           if git merge-base --is-ancestor "$source" HEAD; then
             echo "Already based on this stable source; nothing to replay"
             exit 0
